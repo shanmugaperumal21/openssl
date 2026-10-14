@@ -1,0 +1,361 @@
+
+Elliptic Curve Cryptography
+
+import java.util.*;
+
+/**
+ * Experiment 9 - Implementation of Elliptic Curve Cryptography
+ * Curve: y^2 = x^3 + 2x + 2 over GF(17), G = (5,1), n = 19
+ *
+ * Compile : javac ECC.java
+ * Run     : java ECC
+ */
+public class ECC {
+
+    // ---- curve parameters (non-final so Section 8 can change p) ----
+    static int P = 17, A = 2, B = 2;
+    static int[] G = { 5, 1 };
+    static int N = 19;
+
+    static int lastK;                       // k used by the last encryptRandom()
+    static final Random RND = new Random();
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+    static int mod(long a, int p) {
+        int r = (int) (a % p);
+        return r < 0 ? r + p : r;
+    }
+
+    // modular inverse by extended Euclid (works for negative a too)
+    static int inverse(int a, int p) {
+        a = mod(a, p);
+        int t = 0, newT = 1, r = p, newR = a;
+        while (newR != 0) {
+            int q = r / newR;
+            int tmp = t - q * newT;  t = newT;  newT = tmp;
+            tmp = r - q * newR;      r = newR;  newR = tmp;
+        }
+        if (r > 1) throw new ArithmeticException("no inverse");
+        return t < 0 ? t + p : t;
+    }
+
+    static String show(int[] pt) {
+        return pt == null ? "O" : "(" + pt[0] + "," + pt[1] + ")";
+    }
+
+    static boolean onCurve(int[] pt) {
+        if (pt == null) return false;
+        long rhs = (long) pt[0] * pt[0] * pt[0] + (long) A * pt[0] + B;
+        return mod((long) pt[1] * pt[1], P) == mod(rhs, P);
+    }
+
+    static boolean isSingular(int a, int b, int p) {
+        return mod(4L * a * a * a + 27L * b * b, p) == 0;
+    }
+
+    // ------------------------------------------------------------------
+    // Function 1: all affine points of y^2 = x^3 + ax + b (mod p)
+    // ------------------------------------------------------------------
+    public static List<int[]> generatePoints(int p, int a, int b) {
+        List<int[]> points = new ArrayList<>();
+        for (int x = 0; x < p; x++) {
+            int rhs = mod((long) x * x * x + (long) a * x + b, p);   // x^3 + ax + b
+            for (int y = 0; y < p; y++) {
+                if (mod((long) y * y, p) == rhs)                      // y^2 = rhs ?
+                    points.add(new int[] { x, y });
+            }
+        }
+        return points;
+    }
+
+    // ------------------------------------------------------------------
+    // Function 2: point addition / doubling. null = point at infinity O
+    // ------------------------------------------------------------------
+    public static int[] pointAdd(int x1, int y1, int x2, int y2, int a, int p) {
+        if (x1 == x2 && mod(y1 + y2, p) == 0)
+            return null;                                              // P + (-P) = O
+        int lambda;
+        if (x1 == x2 && y1 == y2)                                     // doubling: tangent slope
+            lambda = mod((3L * x1 * x1 + a) * inverse(2 * y1, p), p);
+        else                                                          // addition: chord slope
+            lambda = mod((long) (y2 - y1) * inverse(x2 - x1, p), p);
+        int x3 = mod((long) lambda * lambda - x1 - x2, p);
+        int y3 = mod((long) lambda * (x1 - x3) - y1, p);
+        return new int[] { x3, y3 };
+    }
+
+    // ------------------------------------------------------------------
+    // Function 3: k * (x, y) by double-and-add. null = O
+    // ------------------------------------------------------------------
+    public static int[] scalarMultiply(int k, int x, int y, int a, int p) {
+        int[] result = null;                                          // running sum, null means O
+        int[] q = { x, y };                                           // q = (x,y), 2(x,y), 4(x,y)...
+        while (k > 0 && q != null) {
+            if ((k & 1) == 1)                                         // this bit of k is 1: add q
+                result = (result == null) ? q
+                        : pointAdd(result[0], result[1], q[0], q[1], a, p);
+            q = pointAdd(q[0], q[1], q[0], q[1], a, p);               // double q
+            k = k >> 1;                                               // next bit of k
+        }
+        return result;
+    }
+
+    // ------------------------------------------------------------------
+    // Encryption (Algorithm 5.1)  ->  { C1, C2 }  or null if it must be retried / rejected
+    // ------------------------------------------------------------------
+    static int[][] encrypt(int[] pm, int[] q, int k) {
+        if (!onCurve(pm)) return null;                                // step 2: Pm must be on the curve
+        int[] C1 = scalarMultiply(k, G[0], G[1], A, P);               // C1 = k.G
+        int[] S  = scalarMultiply(k, q[0], q[1], A, P);               // S  = k.Q
+        if (C1 == null || S == null) return null;                     // step 7: O -> choose new k
+        int[] C2 = pointAdd(pm[0], pm[1], S[0], S[1], A, P);          // C2 = Pm + S
+        if (C2 == null) return null;                                  // step 7: O -> choose new k
+        return new int[][] { C1, C2 };
+    }
+
+    // picks a random k in [1, n-1] and retries until a valid ciphertext is produced
+    static int[][] encryptRandom(int[] pm, int[] q) {
+        if (!onCurve(pm)) return null;
+        while (true) {
+            int k = 1 + RND.nextInt(N - 1);
+            int[][] c = encrypt(pm, q, k);
+            if (c != null) { lastK = k; return c; }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Decryption (Algorithm 5.2)  ->  Pm = C2 - d.C1
+    // ------------------------------------------------------------------
+    static int[] decrypt(int[][] cipher, int d) {
+        int[] C1 = cipher[0];
+        int[] C2 = cipher[1];
+        int[] S = scalarMultiply(d, C1[0], C1[1], A, P);              // S = d.C1 = k.Q
+        if (S == null) return C2;
+        int[] minusS = { S[0], mod(-S[1], P) };                       // -S
+        return pointAdd(C2[0], C2[1], minusS[0], minusS[1], A, P);    // C2 - S
+    }
+
+    // ==================================================================
+    // 6.1  Functions 1-3
+    // ==================================================================
+    static void section61() {
+        System.out.println("==== 6.1 Functions 1-3 ====");
+        List<int[]> points = generatePoints(P, A, B);
+        System.out.println("Number of affine points = " + points.size());
+        for (int[] q : points) System.out.println(show(q));
+        System.out.println("G + G = " + show(pointAdd(G[0], G[1], G[0], G[1], A, P)));
+        for (int k = 1; k <= N; k++)
+            System.out.println(k + " * G = " + show(scalarMultiply(k, G[0], G[1], A, P)));
+    }
+
+    // ==================================================================
+    // 6.2 / 6.3  Encryption and decryption demo
+    // ==================================================================
+    static void section62and63() {
+        int d = 7;
+        int[] Q = scalarMultiply(d, G[0], G[1], A, P);
+        System.out.println("\n==== 6.2 Encryption ====");
+        System.out.println("Private Key d = " + d);
+        System.out.println("Public Key Q = " + show(Q));
+
+        int[][] plain = { { 0, 6 }, { 3, 1 }, { 5, 1 } };
+        int[] ks      = { 3, 5, 7 };
+        int[][][] ciphers = new int[3][][];
+        for (int i = 0; i < 3; i++) {
+            ciphers[i] = encrypt(plain[i], Q, ks[i]);
+            System.out.println("\nPlaintext = " + show(plain[i]));
+            System.out.println("k = " + ks[i]);
+            System.out.println("C1 = " + show(ciphers[i][0]));
+            System.out.println("C2 = " + show(ciphers[i][1]));
+        }
+
+        System.out.println("\n==== 6.3 Decryption ====");
+        System.out.println("Private Key d = " + d);
+        for (int i = 0; i < 3; i++) {
+            System.out.println("\nC1 = " + show(ciphers[i][0]));
+            System.out.println("C2 = " + show(ciphers[i][1]));
+            System.out.println("Recovered Plaintext = " + show(decrypt(ciphers[i], d)));
+        }
+    }
+
+    // ==================================================================
+    // 7  Edge case testing
+    // ==================================================================
+    static String pf(boolean ok) { return ok ? "Pass" : "FAIL"; }
+
+    static void section7() {
+        System.out.println("\n==== 7. Edge Case Testing ====");
+        int d = 7;
+        int[] Q = scalarMultiply(d, G[0], G[1], A, P);
+        List<int[]> pts = generatePoints(P, A, B);
+
+        // 1: every generated point satisfies the equation, count = 18
+        boolean all = true;
+        for (int[] pt : pts) all &= onCurve(pt);
+        System.out.println("1) p=17,a=2,b=2 -> " + pts.size() + " points, all on curve = " + all
+                + " -> " + pf(all && pts.size() == 18));
+
+        // 2: singular curve a=0,b=0
+        boolean sing = isSingular(0, 0, 17);
+        System.out.println("2) p=17,a=0,b=0 -> 4a^3+27b^2 mod p = "
+                + mod(4L * 0 + 27L * 0, 17) + ", singular = " + sing + ", points listed = "
+                + generatePoints(17, 0, 0).size() + " -> " + pf(sing));
+        System.out.println("   (singular curve has a cusp/node: no well-defined tangent, group law fails)");
+
+        // 3: addition of two different points
+        int[] r3 = pointAdd(5, 1, 6, 3, A, P);
+        System.out.println("3) (5,1)+(6,3) = " + show(r3) + " (expected (10,6)) -> "
+                + pf(Arrays.equals(r3, new int[] { 10, 6 })));
+
+        // 4: doubling
+        int[] r4 = pointAdd(5, 1, 5, 1, A, P);
+        System.out.println("4) (5,1)+(5,1) = " + show(r4) + " (expected (6,3)) -> "
+                + pf(Arrays.equals(r4, new int[] { 6, 3 })));
+
+        // 5: point + its inverse
+        int[] r5 = pointAdd(5, 1, 5, 16, A, P);
+        System.out.println("5) (5,1)+(5,16) = " + show(r5) + " (expected O) -> " + pf(r5 == null));
+
+        // 6: k = 0, 1, n
+        int[] k0 = scalarMultiply(0, 5, 1, A, P);
+        int[] k1 = scalarMultiply(1, 5, 1, A, P);
+        int[] kn = scalarMultiply(N, 5, 1, A, P);
+        System.out.println("6) k=0 -> " + show(k0) + ", k=1 -> " + show(k1) + ", k=19 -> " + show(kn)
+                + " -> " + pf(k0 == null && Arrays.equals(k1, G) && kn == null));
+
+        // 7: kP == P added k times using Function 2
+        boolean ok7 = true;
+        for (int k = 2; k <= 6; k++) {
+            int[] sum = { G[0], G[1] };
+            for (int i = 1; i < k; i++) sum = pointAdd(sum[0], sum[1], G[0], G[1], A, P);
+            int[] fast = scalarMultiply(k, G[0], G[1], A, P);
+            System.out.println("7) k=" + k + ": repeated add = " + show(sum) + ", double-and-add = " + show(fast));
+            ok7 &= Arrays.equals(sum, fast);
+        }
+        System.out.println("   -> " + pf(ok7));
+
+        // 8: every point used as plaintext, encrypt (random k) then decrypt
+        int recovered = 0;
+        for (int[] pm : pts) {
+            int[][] c = encryptRandom(pm, Q);
+            if (Arrays.equals(decrypt(c, d), pm)) recovered++;
+        }
+        System.out.println("8) " + recovered + "/" + pts.size() + " plaintext points recovered -> "
+                + pf(recovered == pts.size()));
+
+        // 9: same plaintext, different k -> different ciphertexts, both decrypt
+        int[] pm9 = { 3, 1 };
+        int[][] c1 = encrypt(pm9, Q, 5);
+        int[][] c2 = encrypt(pm9, Q, 9);
+        boolean diff = !Arrays.equals(c1[0], c2[0]) || !Arrays.equals(c1[1], c2[1]);
+        boolean both = Arrays.equals(decrypt(c1, d), pm9) && Arrays.equals(decrypt(c2, d), pm9);
+        System.out.println("9) k=5 -> C1=" + show(c1[0]) + " C2=" + show(c1[1])
+                + " | k=9 -> C1=" + show(c2[0]) + " C2=" + show(c2[1])
+                + " -> " + pf(diff && both));
+
+        // 10: wrong private key
+        int[] wrong = decrypt(c1, 8);
+        System.out.println("10) decrypt with d=8 -> " + show(wrong) + " (original " + show(pm9) + ") -> "
+                + pf(!Arrays.equals(wrong, pm9)));
+
+        // 11: plaintext not on the curve
+        int[][] r11 = encrypt(new int[] { 5, 2 }, Q, 3);
+        System.out.println("11) Pm=(5,2) -> " + (r11 == null ? "Point rejected (not on curve)" : "ACCEPTED")
+                + " -> " + pf(r11 == null));
+
+        // 12: k that makes C2 = O  (Pm=(5,1), k=8)  -> must retry
+        int[] S12 = scalarMultiply(8, Q[0], Q[1], A, P);
+        int[] C2_12 = pointAdd(5, 1, S12[0], S12[1], A, P);
+        int[][] r12 = encrypt(new int[] { 5, 1 }, Q, 8);
+        System.out.println("12) Pm=(5,1), k=8 -> S=" + show(S12) + ", C2=" + show(C2_12)
+                + ", encrypt() returned " + (r12 == null ? "null (new k required)" : "ciphertext")
+                + " -> " + pf(C2_12 == null && r12 == null));
+        int[][] retry = encryptRandom(new int[] { 5, 1 }, Q);
+        System.out.println("    retry with k=" + lastK + " -> C1=" + show(retry[0]) + ", C2=" + show(retry[1])
+                + ", decrypts to " + show(decrypt(retry, d)));
+    }
+
+    // ==================================================================
+    // 8  Time analysis (System.nanoTime, averaged over several runs)
+    // ==================================================================
+    static void section8() {
+        System.out.println("\n==== 8. Time Analysis (average ms) ====");
+        System.out.printf("%-8s %-14s %-14s %-14s %-14s %-14s%n",
+                "p", "GeneratePts", "PointAdd", "ScalarMul", "Encrypt", "Decrypt");
+
+        int[] primes = { 17, 101, 1009, 10007 };
+        int sink = 0;                                   // stops the JIT removing the calls
+
+        for (int p : primes) {
+            P = p; A = 2; B = 2;
+            List<int[]> pts = generatePoints(p, A, B);
+            N = pts.size() + 1;
+
+            // choose G (y != 0 so doubling is defined) and a receiver key d with Q != O
+            int d = 1 + N / 3;
+            int[] Q = null;
+            for (int[] cand : pts) {
+                if (cand[1] == 0) continue;
+                if (p == 17 && !(cand[0] == 5 && cand[1] == 1)) continue;
+                int[] q = scalarMultiply(d, cand[0], cand[1], A, P);
+                if (q != null) { G = cand; Q = q; break; }
+            }
+            int[] pm = null;
+            for (int[] cand : pts) if (!Arrays.equals(cand, G)) { pm = cand; break; }
+
+            // find a k for which encryption does not hit O
+            int k = 0; int[][] cipher = null;
+            while (cipher == null) { k = 1 + RND.nextInt(N - 1); cipher = encrypt(pm, Q, k); }
+
+            // warm-up so the JIT does not distort the first rows
+            for (int i = 0; i < 2000; i++) {
+                int[] t = pointAdd(G[0], G[1], G[0], G[1], A, P); sink += t == null ? 0 : t[0];
+                int[] u = scalarMultiply(1000, G[0], G[1], A, P); sink += u == null ? 0 : u[0];
+            }
+
+            int genRuns = p <= 101 ? 200 : (p <= 1009 ? 50 : 10);
+            int opRuns = 2000;
+
+            long t0 = System.nanoTime();
+            for (int i = 0; i < genRuns; i++) sink += generatePoints(p, A, B).size();
+            double tGen = (System.nanoTime() - t0) / 1e6 / genRuns;
+
+            t0 = System.nanoTime();
+            for (int i = 0; i < opRuns; i++) {
+                int[] t = pointAdd(G[0], G[1], G[0], G[1], A, P); sink += t == null ? 0 : t[0];
+            }
+            double tAdd = (System.nanoTime() - t0) / 1e6 / opRuns;
+
+            t0 = System.nanoTime();
+            for (int i = 0; i < opRuns; i++) {
+                int[] u = scalarMultiply(1000, G[0], G[1], A, P); sink += u == null ? 0 : u[0];
+            }
+            double tMul = (System.nanoTime() - t0) / 1e6 / opRuns;
+
+            t0 = System.nanoTime();
+            for (int i = 0; i < opRuns; i++) { int[][] c = encrypt(pm, Q, k); sink += c[0][0]; }
+            double tEnc = (System.nanoTime() - t0) / 1e6 / opRuns;
+
+            t0 = System.nanoTime();
+            for (int i = 0; i < opRuns; i++) { int[] r = decrypt(cipher, d); sink += r[0]; }
+            double tDec = (System.nanoTime() - t0) / 1e6 / opRuns;
+
+            System.out.printf("%-8d %-14.4f %-14.4f %-14.4f %-14.4f %-14.4f%n",
+                    p, tGen, tAdd, tMul, tEnc, tDec);
+        }
+        if (sink == Integer.MIN_VALUE) System.out.println(sink);   // never true
+
+        // restore the experiment's curve
+        P = 17; A = 2; B = 2; G = new int[] { 5, 1 }; N = 19;
+    }
+
+    // ==================================================================
+    public static void main(String[] args) {
+        section61();
+        section62and63();
+        section7();
+        section8();
+    }
+}
