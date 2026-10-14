@@ -24,3 +24,515 @@ openssl rsa -pubout -in pvtkey.pem -out pub.pem
 
 open ssl dgst -sha256 -sign pvtkey.pem -out signature.bin plain.txt
 openssl dgst -sha256 -verify pub.pem -signature signature.bin plain.txt
+
+
+-------------------------------------------------------------------------------------
+Key pair generation
+
+import java.math.BigInteger;
+import java.security.SecureRandom;
+
+public class DiffieHellman {
+
+    public static BigInteger modPow(
+            BigInteger base, BigInteger exp, BigInteger m) {
+        return base.modPow(exp, m);
+    }
+
+    public static BigInteger[] generateKeyPair(
+            BigInteger p, BigInteger g) {
+
+        SecureRandom random = new SecureRandom();
+        BigInteger privateKey;
+
+        do {
+            privateKey = new BigInteger(p.bitLength(), random);
+        } while (privateKey.compareTo(BigInteger.valueOf(2)) < 0
+                || privateKey.compareTo(
+                    p.subtract(BigInteger.valueOf(2))) > 0);
+
+        BigInteger publicKey = modPow(g, privateKey, p);
+
+        return new BigInteger[]{privateKey, publicKey};
+    }
+
+    public static void main(String[] args) {
+
+        BigInteger p = BigInteger.valueOf(23);
+        BigInteger g = BigInteger.valueOf(5);
+
+        BigInteger[] keys = generateKeyPair(p, g);
+
+        System.out.println("Public Parameters:");
+        System.out.println("p = " + p);
+        System.out.println("g = " + g);
+
+        System.out.println("\nGenerated Key Pair:");
+        System.out.println("Private Key = " + keys[0]);
+        System.out.println("Public Key = " + keys[1]);
+    }
+}
+
+-----------------------------------------------------------------------------------------
+Shared secret computation
+
+import java.math.BigInteger;
+
+public class SharedSecret {
+
+    public static BigInteger modPow(
+            BigInteger base, BigInteger exp, BigInteger m) {
+        return base.modPow(exp, m);
+    }
+
+    public static BigInteger computeSharedSecret(
+            BigInteger otherPublic,
+            BigInteger myPrivate,
+            BigInteger p) {
+
+        return modPow(otherPublic, myPrivate, p);
+    }
+
+    public static void main(String[] args) {
+
+        BigInteger p = BigInteger.valueOf(23);
+
+        // Demonstration keys from the lab manual
+        BigInteger a = BigInteger.valueOf(6);
+        BigInteger A = BigInteger.valueOf(8);
+
+        BigInteger b = BigInteger.valueOf(15);
+        BigInteger B = BigInteger.valueOf(19);
+
+        BigInteger clientK = computeSharedSecret(B, a, p);
+        BigInteger serverK = computeSharedSecret(A, b, p);
+
+        System.out.println("Client Shared Secret = " + clientK);
+        System.out.println("Server Shared Secret = " + serverK);
+
+        if (clientK.equals(serverK)) {
+            System.out.println("Shared Secret Matched");
+        } else {
+            System.out.println("Shared Secret Mismatch");
+        }
+    }
+}
+
+
+----------------------------------------------------------------------
+Diffie–Hellman server
+
+import java.io.*;
+import java.math.BigInteger;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.security.*;
+
+public class DHServer {
+
+    static final BigInteger P = BigInteger.valueOf(23);
+    static final BigInteger G = BigInteger.valueOf(5);
+
+    public static BigInteger modPow(
+            BigInteger base, BigInteger exp, BigInteger m) {
+        return base.modPow(exp, m);
+    }
+
+    public static BigInteger[] generateKeyPair(
+            BigInteger p, BigInteger g) {
+
+        SecureRandom random = new SecureRandom();
+        BigInteger privateKey;
+
+        do {
+            privateKey = new BigInteger(p.bitLength(), random);
+        } while (privateKey.compareTo(BigInteger.valueOf(2)) < 0
+                || privateKey.compareTo(
+                    p.subtract(BigInteger.valueOf(2))) > 0);
+
+        BigInteger publicKey = modPow(g, privateKey, p);
+
+        return new BigInteger[]{privateKey, publicKey};
+    }
+
+    public static BigInteger computeSharedSecret(
+            BigInteger otherPublic,
+            BigInteger myPrivate,
+            BigInteger p) {
+
+        return modPow(otherPublic, myPrivate, p);
+    }
+
+    public static String sha256(BigInteger key) throws Exception {
+
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+
+        byte[] hash = md.digest(
+                key.toString().getBytes(StandardCharsets.UTF_8));
+
+        StringBuilder result = new StringBuilder();
+
+        for (byte b : hash) {
+            result.append(String.format("%02x", b & 0xff));
+        }
+
+        return result.toString();
+    }
+
+    public static void runServer(int port) throws Exception {
+
+        try (ServerSocket serverSocket = new ServerSocket(port)) {
+
+            System.out.println("Server started on port " + port);
+            System.out.println("Waiting for client...");
+
+            try (Socket socket = serverSocket.accept();
+                 BufferedReader in = new BufferedReader(
+                     new InputStreamReader(socket.getInputStream()));
+                 PrintWriter out = new PrintWriter(
+                     socket.getOutputStream(), true)) {
+
+                System.out.println("Client connected.");
+
+                BigInteger[] keys = generateKeyPair(P, G);
+                BigInteger b = keys[0];
+                BigInteger B = keys[1];
+
+                BigInteger A = new BigInteger(in.readLine());
+
+                if (A.compareTo(BigInteger.valueOf(2)) < 0
+                        || A.compareTo(
+                            P.subtract(BigInteger.valueOf(2))) > 0) {
+                    out.println("ERROR");
+                    throw new IOException("Invalid client public key");
+                }
+
+                out.println(B);
+
+                BigInteger K = computeSharedSecret(A, b, P);
+
+                System.out.println("Server Private Key = " + b);
+                System.out.println("Server Public Key = " + B);
+                System.out.println("Received Client Public Key = " + A);
+                System.out.println("Shared Secret = " + K);
+
+                String serverHash = sha256(K);
+                out.println(serverHash);
+
+                String clientHash = in.readLine();
+
+                if (serverHash.equals(clientHash)) {
+                    System.out.println("Key Confirmation: MATCH");
+                } else {
+                    System.out.println("Key Confirmation: MISMATCH");
+                }
+            }
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        runServer(5000);
+    }
+}
+
+----------------------------------------------------------------
+Diffie Hellman Client
+
+import java.io.*;
+import java.math.BigInteger;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.security.*;
+
+public class DHClient {
+
+    static final BigInteger P = BigInteger.valueOf(23);
+    static final BigInteger G = BigInteger.valueOf(5);
+
+    public static BigInteger modPow(
+            BigInteger base, BigInteger exp, BigInteger m) {
+        return base.modPow(exp, m);
+    }
+
+    public static BigInteger[] generateKeyPair(
+            BigInteger p, BigInteger g) {
+
+        SecureRandom random = new SecureRandom();
+        BigInteger privateKey;
+
+        do {
+            privateKey = new BigInteger(p.bitLength(), random);
+        } while (privateKey.compareTo(BigInteger.valueOf(2)) < 0
+                || privateKey.compareTo(
+                    p.subtract(BigInteger.valueOf(2))) > 0);
+
+        BigInteger publicKey = modPow(g, privateKey, p);
+
+        return new BigInteger[]{privateKey, publicKey};
+    }
+
+    public static BigInteger computeSharedSecret(
+            BigInteger otherPublic,
+            BigInteger myPrivate,
+            BigInteger p) {
+
+        return modPow(otherPublic, myPrivate, p);
+    }
+
+    public static String sha256(BigInteger key) throws Exception {
+
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+
+        byte[] hash = md.digest(
+                key.toString().getBytes(StandardCharsets.UTF_8));
+
+        StringBuilder result = new StringBuilder();
+
+        for (byte b : hash) {
+            result.append(String.format("%02x", b & 0xff));
+        }
+
+        return result.toString();
+    }
+
+    public static void runClient(String host, int port) throws Exception {
+
+        try (Socket socket = new Socket(host, port);
+             BufferedReader in = new BufferedReader(
+                 new InputStreamReader(socket.getInputStream()));
+             PrintWriter out = new PrintWriter(
+                 socket.getOutputStream(), true)) {
+
+            System.out.println("Connected to server.");
+
+            BigInteger[] keys = generateKeyPair(P, G);
+            BigInteger a = keys[0];
+            BigInteger A = keys[1];
+
+            out.println(A);
+
+            String received = in.readLine();
+
+            if (received == null || received.equals("ERROR")) {
+                throw new IOException("Server rejected the public key");
+            }
+
+            BigInteger B = new BigInteger(received);
+
+            if (B.compareTo(BigInteger.valueOf(2)) < 0
+                    || B.compareTo(
+                        P.subtract(BigInteger.valueOf(2))) > 0) {
+                throw new IOException("Invalid server public key");
+            }
+
+            BigInteger K = computeSharedSecret(B, a, P);
+
+            System.out.println("Client Private Key = " + a);
+            System.out.println("Client Public Key = " + A);
+            System.out.println("Received Server Public Key = " + B);
+            System.out.println("Shared Secret = " + K);
+
+            String serverHash = in.readLine();
+            String clientHash = sha256(K);
+
+            out.println(clientHash);
+
+            if (serverHash != null && serverHash.equals(clientHash)) {
+                System.out.println("Key Confirmation: MATCH");
+            } else {
+                System.out.println("Key Confirmation: MISMATCH");
+            }
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        runClient("localhost", 5000);
+    }
+}
+
+-------------------------------------------------------------------------------------------------------------------
+Man-in-the-Middle attacker proxy
+
+import java.io.*;
+import java.math.BigInteger;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.security.*;
+
+public class DHAttacker {
+
+    static final BigInteger P = BigInteger.valueOf(23);
+    static final BigInteger G = BigInteger.valueOf(5);
+
+    public static BigInteger modPow(
+            BigInteger base, BigInteger exp, BigInteger m) {
+        return base.modPow(exp, m);
+    }
+
+    public static BigInteger[] generateKeyPair(
+            BigInteger p, BigInteger g) {
+
+        SecureRandom random = new SecureRandom();
+        BigInteger privateKey;
+
+        do {
+            privateKey = new BigInteger(p.bitLength(), random);
+        } while (privateKey.compareTo(BigInteger.valueOf(2)) < 0
+                || privateKey.compareTo(
+                    p.subtract(BigInteger.valueOf(2))) > 0);
+
+        BigInteger publicKey = modPow(g, privateKey, p);
+
+        return new BigInteger[]{privateKey, publicKey};
+    }
+
+    public static BigInteger computeSharedSecret(
+            BigInteger otherPublic,
+            BigInteger myPrivate,
+            BigInteger p) {
+
+        return modPow(otherPublic, myPrivate, p);
+    }
+
+    public static String sha256(BigInteger key) throws Exception {
+
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+
+        byte[] hash = md.digest(
+                key.toString().getBytes(StandardCharsets.UTF_8));
+
+        StringBuilder result = new StringBuilder();
+
+        for (byte b : hash) {
+            result.append(String.format("%02x", b & 0xff));
+        }
+
+        return result.toString();
+    }
+
+    private static void validatePublicKey(BigInteger key)
+            throws IOException {
+
+        if (key.compareTo(BigInteger.valueOf(2)) < 0
+                || key.compareTo(
+                    P.subtract(BigInteger.valueOf(2))) > 0) {
+            throw new IOException("Invalid public key");
+        }
+    }
+
+    public static void runAttacker(
+            int listenPort,
+            String realServerHost,
+            int realServerPort) throws Exception {
+
+        try (ServerSocket listener = new ServerSocket(listenPort)) {
+
+            System.out.println("MITM Attacker started on port "
+                    + listenPort);
+            System.out.println("Waiting for client...");
+
+            try (Socket clientSocket = listener.accept();
+                 Socket serverSocket =
+                     new Socket(realServerHost, realServerPort);
+                 BufferedReader clientIn = new BufferedReader(
+                     new InputStreamReader(
+                         clientSocket.getInputStream()));
+                 PrintWriter clientOut = new PrintWriter(
+                     clientSocket.getOutputStream(), true);
+                 BufferedReader serverIn = new BufferedReader(
+                     new InputStreamReader(
+                         serverSocket.getInputStream()));
+                 PrintWriter serverOut = new PrintWriter(
+                     serverSocket.getOutputStream(), true)) {
+
+                System.out.println("Client connected through attacker.");
+                System.out.println("Connected to real server.");
+
+                // Generate two independent attacker key pairs.
+                // m1/M1: server-facing key pair.
+                // m2/M2: client-facing key pair.
+                BigInteger[] serverKeys = generateKeyPair(P, G);
+                BigInteger m1 = serverKeys[0];
+                BigInteger M1 = serverKeys[1];
+
+                BigInteger[] clientKeys = generateKeyPair(P, G);
+                BigInteger m2 = clientKeys[0];
+                BigInteger M2 = clientKeys[1];
+
+                // Receive the client's public key A.
+                BigInteger A = new BigInteger(clientIn.readLine());
+                validatePublicKey(A);
+
+                // Send attacker's public key M1 to the real server.
+                serverOut.println(M1);
+
+                // Receive server's public key B.
+                BigInteger B = new BigInteger(serverIn.readLine());
+                validatePublicKey(B);
+
+                // Send attacker's public key M2 to the client.
+                clientOut.println(M2);
+
+                // Compute two independent shared secrets.
+                BigInteger K_clientSide =
+                        computeSharedSecret(A, m2, P);
+
+                BigInteger K_serverSide =
+                        computeSharedSecret(B, m1, P);
+
+                System.out.println("\n--- MITM Details ---");
+                System.out.println("Client Public Key A = " + A);
+                System.out.println("Server Public Key B = " + B);
+                System.out.println("Attacker Public Key M1 = " + M1);
+                System.out.println("Attacker Public Key M2 = " + M2);
+
+                System.out.println("Client-side Shared Secret = "
+                        + K_clientSide);
+                System.out.println("Server-side Shared Secret = "
+                        + K_serverSide);
+
+                // Server sends SHA-256(K_serverSide).
+                String serverHash = serverIn.readLine();
+
+                // Send SHA-256(K_clientSide) to the client.
+                clientOut.println(sha256(K_clientSide));
+
+                // Client sends SHA-256(K_clientSide).
+                String clientHash = clientIn.readLine();
+
+                // Send SHA-256(K_serverSide) to the server.
+                serverOut.println(sha256(K_serverSide));
+
+                System.out.println("\n--- Confirmation Results ---");
+                System.out.println("Client confirmation accepted: "
+                        + sha256(K_clientSide).equals(
+                            sha256(K_clientSide)));
+
+                System.out.println("Server confirmation accepted: "
+                        + (serverHash != null
+                           && serverHash.equals(
+                               sha256(K_serverSide))
+                           && clientHash != null
+                           && clientHash.equals(
+                               sha256(K_clientSide))));
+
+                System.out.println("\nMITM demonstration completed.");
+                System.out.println("Client and server have different "
+                        + "shared secrets.");
+
+                if (!K_clientSide.equals(K_serverSide)) {
+                    System.out.println("MITM SUCCESS: Two different "
+                            + "session keys established.");
+                } else {
+                    System.out.println("The two keys happen to match.");
+                }
+            }
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+
+        runAttacker(6000, "localhost", 5000);
+    }
+}
+
